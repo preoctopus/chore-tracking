@@ -40,3 +40,6 @@ tests/dummy.png
 # User uploaded files
 static/uploads/*
 !static/uploads/.gitkeep
+
+# Sensitive router credentials (used by GL.iNet integration via Docker secret)
+router_password.txt

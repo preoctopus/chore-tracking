@@ -213,6 +213,11 @@
                                     <label for="childUsername">Child's Username</label>
                                     <input type="text" id="childUsername" placeholder="e.g. tommy" required autocomplete="off">
                                 </div>
+                                <div class="form-group">
+                                    <label for="childMacAddresses">MAC Addresses (optional)</label>
+                                    <textarea id="childMacAddresses" rows="2" placeholder="AA:BB:CC:DD:EE:FF&#10;11:22:33:44:55:66 (one per line)"></textarea>
+                                    <small style="opacity:0.7; font-size:0.75rem;">These can be used later to control internet access via the router.</small>
+                                </div>
                                 <div id="childActionMessage" class="hidden"></div>
                                 <button type="submit" class="btn btn-primary btn-block">Add Child</button>
                             </form>
@@ -227,6 +232,8 @@
                                     <thead>
                                         <tr>
                                             <th>Username</th>
+                                            <th>MAC Addresses</th>
+                                            <th>Internet Access</th>
                                             <th>Role</th>
                                             <th class="text-right">Actions</th>
                                         </tr>
@@ -237,6 +244,36 @@
                                 </table>
                                 <div id="childrenEmptyState" class="empty-state hidden">
                                     <p>No children registered yet.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Router Activity Logs -->
+                        <div class="card card-glass mt-6">
+                            <h3>
+                                Recent Router Activity
+                                <button type="button" class="btn btn-secondary btn-sm" style="margin-left: 1rem;" onclick="app.refreshRouterStatus()">
+                                    🔄 Refresh Router Status
+                                </button>
+                            </h3>
+                            <p class="card-desc">History of automatic and manual blacklist changes (adds/removes MACs from the GL.iNet router).</p>
+                            <div class="table-container" style="max-height: 220px; overflow: auto;">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Time (UTC)</th>
+                                            <th>Child</th>
+                                            <th>Action</th>
+                                            <th>Actor</th>
+                                            <th>Result</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="routerLogsBody">
+                                        <!-- Populated by JS -->
+                                    </tbody>
+                                </table>
+                                <div id="routerLogsEmpty" class="empty-state hidden">
+                                    <p>No router activity yet.</p>
                                 </div>
                             </div>
                         </div>
@@ -342,6 +379,52 @@
                     <button type="submit" class="btn btn-primary">Save Password</button>
                 </div>
             </form>
+        </div>
+    </dialog>
+
+    <!-- Edit Child MAC Addresses Dialog -->
+    <dialog id="editChildMacModal" class="modal-dialog">
+        <div class="modal-header">
+            <h3>Router MAC Addresses</h3>
+            <button type="button" class="modal-close-btn" onclick="document.getElementById('editChildMacModal').close()">✕</button>
+        </div>
+        <div class="modal-body">
+            <p style="margin-bottom: 0.75rem; font-size: 0.9rem;">Manage MAC addresses for child: <strong id="editMacChildUsername" style="color: var(--text-primary);"></strong></p>
+            <p style="margin-bottom: 1rem; font-size: 0.8rem; opacity: 0.75;">These MACs can be used by the webapp to add/remove the child's devices from the GL.iNet router blacklist (e.g. to gate internet access behind completed chores).</p>
+            
+            <div class="form-group">
+                <label>Add MAC Address</label>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" id="newMacInput" placeholder="AA:BB:CC:DD:EE:FF" style="flex: 1;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); app.addMacToEditList(); }">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="app.addMacToEditList()">Add</button>
+                </div>
+            </div>
+            
+            <div id="macListContainer" style="margin: 0.75rem 0; min-height: 60px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 8px; background: rgba(0,0,0,0.2);">
+                <!-- MAC chips added here dynamically -->
+            </div>
+            <div id="editMacAlert" class="alert hidden"></div>
+            
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('editChildMacModal').close()">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="app.saveChildMacAddresses()">Save MAC List</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Router Refresh / Sync Report Modal -->
+    <dialog id="routerRefreshReportModal" class="modal-dialog">
+        <div class="modal-header">
+            <h3>Router Sync Report</h3>
+            <button type="button" class="modal-close-btn" onclick="document.getElementById('routerRefreshReportModal').close()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div id="routerRefreshReportContent" style="font-size: 0.9rem; line-height: 1.45; max-height: 420px; overflow: auto;">
+                <!-- Dynamically populated by JS with initial, changes, resultant -->
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('routerRefreshReportModal').close()">Close</button>
         </div>
     </dialog>
 

@@ -46,9 +46,13 @@ chore-tracking/
 ├── tests/
 │   ├── dummy.png            # Asset for test uploads
 │   └── test_api.py          # API integration tests suite
-├── glinet-blacklist.py      # CLI utility: manage MAC blacklist/whitelist on GL.iNet routers (SDK 4.0)
+├── glinet-blacklist.py          # CLI utility: manage MAC blacklist/whitelist on GL.iNet routers (SDK 4.0)
+├── glinet_blacklist.py          # Copy/rename of the above for clean Python imports (recommended for webapp use)
 ├── GL.iNet SDK4.0 API-DOCS.pdf  # Router RPC API reference
-└── run_dev.sh               # Developer convenience script (local Flask + Docker MongoDB)
+├── GL-API.md                    # Documentation for using glinet-blacklist as a library
+├── docker-entrypoint.sh         # Container entrypoint (promotes Docker secrets like router password into env vars)
+├── router_password.txt.example  # Template for GL.iNet router admin password (copy to router_password.txt)
+└── run_dev.sh                   # Developer convenience script (local Flask + Docker MongoDB)
 ```
 
 ---
@@ -179,3 +183,30 @@ python glinet-blacklist.py --debug --list
 ```
 
 See the script header and `--help` for all options (custom username, https, insecure certs, etc.).
+
+### Providing Router Credentials in Docker (docker-compose)
+
+When running the full stack with `docker-compose`, router credentials are injected securely using Docker secrets:
+
+1. Copy the template and add your router's admin password:
+   ```bash
+   cp router_password.txt.example router_password.txt
+   # Edit router_password.txt and put the real password on the first line
+   ```
+
+2. `router_password.txt` is listed in `.gitignore` and will never be committed.
+
+3. The `docker-compose.yml` mounts this file as a Docker secret named `router_password` and attaches it to the `web` service.
+
+4. `docker-entrypoint.sh` (the container entrypoint) reads the secret and exports it as the `GLINET_ROUTER_PASS` environment variable before starting Gunicorn.
+
+5. Inside the web container, `GlinetClient` (from `glinet_blacklist.py`) will automatically pick up the password via the `GLINET_ROUTER_PASS` environment variable when no password is passed explicitly.
+
+For local development outside Docker (using `./run_dev.sh`), you can still set the variable directly:
+```bash
+export GLINET_ROUTER_PASS="your-router-admin-password"
+```
+
+**Security notes**:
+- Never commit `router_password.txt`.
+- For production deployments, you may want to use a secrets manager or Docker Swarm secrets and point `docker-compose` at the real file via the `GLINET_ROUTER_PASSWORD_FILE` environment variable.

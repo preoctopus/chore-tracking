@@ -17,6 +17,10 @@ class ChoreTrackerApp {
         this.children = [];
         this.chores = [];
         this.parents = [];
+
+        // MAC editing state (for parent router integration modal)
+        this.editingMacUsername = null;
+        this.editingMacList = [];
     }
 
     // --- Utility Methods ---
@@ -318,6 +322,7 @@ class ChoreTrackerApp {
             document.getElementById('tabBtnChildren').classList.add('active');
             document.getElementById('parentTabChildren').classList.remove('hidden');
             this.loadChildrenList();
+            this.loadRouterLogs();
         }
     }
 
@@ -360,11 +365,42 @@ class ChoreTrackerApp {
             emptyState.classList.add('hidden');
             
             this.children.forEach(c => {
+                const macs = c.mac_addresses || [];
+                let macDisplay = '';
+                if (macs.length === 0) {
+                    macDisplay = '<span style="opacity:0.6; font-size:0.8rem;">None</span>';
+                } else {
+                    const display = macs.length > 2 
+                        ? macs.slice(0, 2).join(', ') + ` +${macs.length - 2}` 
+                        : macs.join(', ');
+                    macDisplay = `<span title="${escapeHTML(macs.join(', '))}" style="font-family: monospace; font-size: 0.8rem;">${escapeHTML(display)}</span>`;
+                }
+
+                const isBlocked = !!c.router_blacklisted;
+                const internetBadge = isBlocked 
+                    ? `<span class="badge" style="background:#ef4444; color:white;">Blocked</span>`
+                    : `<span class="badge" style="background:#10b981; color:white;">Allowed</span>`;
+
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td><strong>${escapeHTML(c.username)}</strong></td>
+                    <td>
+                        ${macDisplay}
+                    </td>
+                    <td>
+                        ${internetBadge}
+                    </td>
                     <td><span class="badge badge-child">Child</span></td>
                     <td class="text-right">
+                        <button type="button" class="btn btn-secondary btn-sm btn-icon" style="margin-right: 0.25rem;" title="Edit MAC Addresses (Router)" onclick="event.preventDefault(); event.stopPropagation(); app.openEditChildMacModal('${escapeHTML(c.username)}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                        </button>
+                        <button type="button" class="btn btn-sm" style="margin-right: 0.25rem; ${isBlocked ? '' : 'opacity:0.5;'}" title="Block Internet (add to blacklist)" onclick="event.preventDefault(); event.stopPropagation(); app.blockChildInternet('${escapeHTML(c.username)}')">
+                            Block
+                        </button>
+                        <button type="button" class="btn btn-sm" style="margin-right: 0.5rem; ${isBlocked ? 'opacity:0.5;' : ''}" title="Allow Internet (remove from blacklist)" onclick="event.preventDefault(); event.stopPropagation(); app.allowChildInternet('${escapeHTML(c.username)}')">
+                            Allow
+                        </button>
                         <button type="button" class="btn btn-secondary btn-sm btn-icon" style="margin-right: 0.5rem;" title="Change Password" onclick="event.preventDefault(); event.stopPropagation(); app.openChangeChildPasswordModal('${escapeHTML(c.username)}')">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                         </button>
@@ -384,20 +420,34 @@ class ChoreTrackerApp {
         event.preventDefault();
         this.hideAlert('childActionMessage');
         const usernameInput = document.getElementById('childUsername');
+        const macInput = document.getElementById('childMacAddresses');
         const username = usernameInput.value.trim();
         
         if (!username) return;
+        
+        // Parse optional MAC addresses (support newlines or commas)
+        let macAddresses = [];
+        if (macInput && macInput.value.trim()) {
+            const lines = macInput.value.replace(/,/g, '\n').split('\n');
+            macAddresses = lines.map(l => l.trim()).filter(Boolean);
+        }
+        
+        const payload = { username };
+        if (macAddresses.length > 0) {
+            payload.mac_addresses = macAddresses;
+        }
         
         try {
             const response = await fetch('/api/children', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username })
+                body: JSON.stringify(payload)
             });
             const data = await response.json();
             
             if (response.ok) {
                 usernameInput.value = '';
+                if (macInput) macInput.value = '';
                 
                 const childMsg = document.getElementById('childActionMessage');
                 childMsg.className = 'alert alert-success';
@@ -970,6 +1020,283 @@ class ChoreTrackerApp {
             }
         } catch (error) {
             this.showAlert('childPasswordChangeAlert', 'Failed to communicate with server.', 'danger');
+        }
+    }
+
+    // --- Parent: Child MAC Address Management (Router Integration) ---
+    async openEditChildMacModal(username) {
+        this.editingMacUsername = username;
+        this.editingMacList = [];
+
+        // Prefer fresh data from server for this child
+        try {
+            const res = await fetch(`/api/children/${encodeURIComponent(username)}/mac-addresses`);
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(data.mac_addresses)) {
+                    this.editingMacList = [...data.mac_addresses];
+                }
+            }
+        } catch (e) {
+            // Fallback to cache
+            const child = this.children.find(c => c.username === username);
+            if (child && Array.isArray(child.mac_addresses)) {
+                this.editingMacList = [...child.mac_addresses];
+            }
+        }
+
+        document.getElementById('editMacChildUsername').textContent = username;
+        this.hideAlert('editMacAlert');
+        this.renderMacListInModal();
+
+        const modal = document.getElementById('editChildMacModal');
+        modal.showModal();
+    }
+
+    renderMacListInModal() {
+        const container = document.getElementById('macListContainer');
+        container.innerHTML = '';
+
+        if (this.editingMacList.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'opacity:0.6; font-size:0.85rem; padding: 4px 6px;';
+            empty.textContent = 'No MAC addresses added yet.';
+            container.appendChild(empty);
+            return;
+        }
+
+        this.editingMacList.forEach((mac, index) => {
+            const chip = document.createElement('span');
+            chip.style.cssText = `
+                display: inline-flex; align-items: center; gap: 6px;
+                background: rgba(16, 185, 129, 0.15); color: #10b981;
+                font-family: monospace; font-size: 0.8rem;
+                padding: 2px 8px; border-radius: 999px; margin: 3px;
+                border: 1px solid rgba(16, 185, 129, 0.3);
+            `;
+            chip.innerHTML = `
+                ${escapeHTML(mac)}
+                <button type="button" style="background:none; border:none; color:#10b981; cursor:pointer; font-size:14px; line-height:1;" title="Remove">×</button>
+            `;
+            const removeBtn = chip.querySelector('button');
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.removeMacFromEditList(index);
+            };
+            container.appendChild(chip);
+        });
+    }
+
+    addMacToEditList() {
+        const input = document.getElementById('newMacInput');
+        if (!input) return;
+        const value = input.value.trim();
+        if (!value) return;
+
+        // Basic client normalization attempt
+        let normalized = value.replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+        if (normalized.length === 12) {
+            normalized = normalized.match(/.{1,2}/g).join(':');
+        } else {
+            // Let the server do full validation; allow user to try anyway
+            normalized = value.toUpperCase().replace(/[^0-9A-F:]/g, '').replace(/:/g, '').match(/.{1,2}/g)?.join(':') || value;
+        }
+
+        if (!this.editingMacList.includes(normalized)) {
+            this.editingMacList.push(normalized);
+        }
+        input.value = '';
+        this.renderMacListInModal();
+    }
+
+    removeMacFromEditList(index) {
+        this.editingMacList.splice(index, 1);
+        this.renderMacListInModal();
+    }
+
+    async saveChildMacAddresses() {
+        if (!this.editingMacUsername) return;
+        this.hideAlert('editMacAlert');
+
+        try {
+            const response = await fetch(`/api/children/${encodeURIComponent(this.editingMacUsername)}/mac-addresses`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mac_addresses: this.editingMacList })
+            });
+            const data = await response.json();
+
+            if (response.ok) {
+                const alertBox = document.getElementById('editMacAlert');
+                alertBox.className = 'alert alert-success';
+                alertBox.textContent = 'MAC addresses saved successfully!';
+                alertBox.classList.remove('hidden');
+
+                // Refresh the children list (which includes MACs)
+                await this.loadChildrenList(true);
+
+                setTimeout(() => {
+                    document.getElementById('editChildMacModal').close();
+                }, 900);
+            } else {
+                this.showAlert('editMacAlert', data.error || 'Failed to save MAC addresses.', 'danger');
+            }
+        } catch (error) {
+            this.showAlert('editMacAlert', 'Failed to communicate with server.', 'danger');
+        }
+    }
+
+    // --- Manual Internet Access Overrides (parent only) ---
+    async blockChildInternet(username) {
+        if (!confirm(`Block internet access for ${username} by adding their MACs to the router blacklist?`)) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/children/${encodeURIComponent(username)}/router/block`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+            if (response.ok) {
+                this.loadChildrenList(true);
+                this.loadRouterLogs();
+            } else {
+                alert(data.message || data.error || 'Failed to block internet.');
+            }
+        } catch (err) {
+            alert('Failed to communicate with server.');
+        }
+    }
+
+    async allowChildInternet(username) {
+        if (!confirm(`Allow internet access for ${username} by removing their MACs from the router blacklist?`)) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/children/${encodeURIComponent(username)}/router/allow`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+            if (response.ok) {
+                this.loadChildrenList(true);
+                this.loadRouterLogs();
+            } else {
+                alert(data.message || data.error || 'Failed to allow internet.');
+            }
+        } catch (err) {
+            alert('Failed to communicate with server.');
+        }
+    }
+
+    async loadRouterLogs() {
+        const tbody = document.getElementById('routerLogsBody');
+        const empty = document.getElementById('routerLogsEmpty');
+        if (!tbody || !empty) return;
+
+        tbody.innerHTML = '';
+        empty.classList.add('hidden');
+
+        try {
+            const res = await fetch('/api/router/logs');
+            if (!res.ok) throw new Error('Failed to load logs');
+            const logs = await res.json();
+
+            if (!logs || logs.length === 0) {
+                empty.classList.remove('hidden');
+                return;
+            }
+
+            logs.forEach(log => {
+                const tr = document.createElement('tr');
+                const time = log.timestamp ? log.timestamp.replace('T', ' ').substring(0, 19) : '';
+                const actionLabel = log.action === 'add_to_blacklist' ? 'Blocked (added to blacklist)' : 'Allowed (removed from blacklist)';
+                const successLabel = log.success ? 
+                    '<span style="color:#10b981;">Success</span>' : 
+                    `<span style="color:#ef4444;">Failed${log.error ? ': ' + escapeHTML(log.error) : ''}</span>`;
+                const actor = log.actor || 'system';
+                const macCount = (log.mac_addresses || []).length;
+
+                tr.innerHTML = `
+                    <td style="font-size:0.75rem; font-family:monospace;">${escapeHTML(time)}</td>
+                    <td><strong>${escapeHTML(log.child_username || '')}</strong> <span style="opacity:0.6;">(${macCount} MACs)</span></td>
+                    <td style="font-size:0.8rem;">${escapeHTML(actionLabel)}</td>
+                    <td style="font-size:0.75rem;">${escapeHTML(actor)}</td>
+                    <td>${successLabel}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        } catch (e) {
+            console.error('Failed to load router logs', e);
+            empty.classList.remove('hidden');
+        }
+    }
+
+    async refreshRouterStatus() {
+        const contentDiv = document.getElementById('routerRefreshReportContent');
+        const modal = document.getElementById('routerRefreshReportModal');
+        if (!contentDiv || !modal) return;
+
+        contentDiv.innerHTML = '<p style="opacity:0.7;">Contacting router and computing required changes...</p>';
+        modal.showModal();
+
+        try {
+            const res = await fetch('/api/router/refresh', { method: 'POST' });
+            const data = await res.json();
+
+            if (!res.ok) {
+                contentDiv.innerHTML = `<p style="color:#ef4444;">Error: ${escapeHTML(data.error || 'Refresh failed')}</p>`;
+                return;
+            }
+
+            let html = `<p><strong>${escapeHTML(data.message || 'Sync complete.')}</strong></p>`;
+
+            // Initial
+            html += '<h4 style="margin-top:1rem; margin-bottom:0.25rem;">Initial Blacklist (from router)</h4>';
+            if (data.initial_blacklist && data.initial_blacklist.length) {
+                html += `<pre style="background:rgba(0,0,0,0.3); padding:8px; border-radius:6px; font-size:0.8rem; white-space:pre-wrap;">${escapeHTML(data.initial_blacklist.join('\n'))}</pre>`;
+            } else {
+                html += '<p style="opacity:0.7;">(empty)</p>';
+            }
+
+            // Changes
+            html += '<h4 style="margin-top:1rem; margin-bottom:0.25rem;">Changes to be made</h4>';
+            const toBlock = data.changes && data.changes.to_block ? data.changes.to_block : [];
+            const toUnblock = data.changes && data.changes.to_unblock ? data.changes.to_unblock : [];
+
+            if (toBlock.length === 0 && toUnblock.length === 0) {
+                html += '<p style="opacity:0.7;">No changes needed — router already in sync with desired state.</p>';
+            } else {
+                if (toBlock.length) {
+                    html += '<div style="margin-bottom:0.5rem;"><strong>To Block (add to blacklist):</strong></div><ul style="margin:0 0 0.75rem 1.2rem; padding:0;">';
+                    toBlock.forEach(item => {
+                        html += `<li style="font-family:monospace;">${escapeHTML(item.mac)} <span style="opacity:0.6;">(${escapeHTML(item.child)})</span></li>`;
+                    });
+                    html += '</ul>';
+                }
+                if (toUnblock.length) {
+                    html += '<div style="margin-bottom:0.5rem;"><strong>To Unblock (remove from blacklist):</strong></div><ul style="margin:0 0 0.75rem 1.2rem; padding:0;">';
+                    toUnblock.forEach(item => {
+                        html += `<li style="font-family:monospace;">${escapeHTML(item.mac)} <span style="opacity:0.6;">(${escapeHTML(item.child)})</span></li>`;
+                    });
+                    html += '</ul>';
+                }
+            }
+
+            // Resultant
+            html += '<h4 style="margin-top:1rem; margin-bottom:0.25rem;">Resultant Blacklist (from router)</h4>';
+            if (data.resultant_blacklist && data.resultant_blacklist.length) {
+                html += `<pre style="background:rgba(0,0,0,0.3); padding:8px; border-radius:6px; font-size:0.8rem; white-space:pre-wrap;">${escapeHTML(data.resultant_blacklist.join('\n'))}</pre>`;
+            } else {
+                html += '<p style="opacity:0.7;">(empty)</p>';
+            }
+
+            contentDiv.innerHTML = html;
+
+            // Refresh the main lists and logs so badges and activity table update
+            this.loadChildrenList(true);
+            this.loadRouterLogs();
+
+        } catch (err) {
+            contentDiv.innerHTML = `<p style="color:#ef4444;">Network error during refresh: ${escapeHTML(err.message || err)}</p>`;
         }
     }
 }

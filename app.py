@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import string
 from datetime import datetime
@@ -9,6 +10,7 @@ from bson.objectid import ObjectId
 import bcrypt
 from werkzeug.utils import secure_filename
 
+
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
 # Flask configuration
@@ -18,6 +20,9 @@ app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB file upload limit
 
 # Ensure uploads folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+#print("ROUTER PASSWORD")
+#print(os.environ.get("GLINET_ROUTER_PASS", "Not Set"))
 
 # MongoDB connection
 mongo_uri = os.environ.get("MONGO_URI", "mongodb://localhost:27017/chore_tracking")
@@ -43,6 +48,16 @@ def generate_random_password(length=8) -> str:
     """Generates an alphanumeric temporary password for new accounts."""
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def normalize_mac(mac: str) -> str:
+    """Normalize a MAC address to uppercase colon-separated format (XX:XX:XX:XX:XX:XX)."""
+    if not mac:
+        return ""
+    m = re.sub(r'[^0-9a-fA-F]', '', str(mac))
+    if len(m) != 12:
+        raise ValueError(f"Invalid MAC address (need 12 hex chars): {mac}")
+    return ':'.join(m[i:i+2].upper() for i in range(0, 12, 2))
 
 def bootstrap_db():
     """Bootstraps the default admin account on startup if it doesn't exist."""
@@ -213,7 +228,12 @@ def delete_parent(username):
 @app.route('/api/children', methods=['GET'])
 @role_required('parent')
 def list_children():
-    children = list(db.users.find({"role": "child"}, {"username": 1, "_id": 0}))
+    children = []
+    for doc in db.users.find({"role": "child"}, {"username": 1, "mac_addresses": 1, "_id": 0}):
+        children.append({
+            "username": doc["username"],
+            "mac_addresses": doc.get("mac_addresses", [])
+        })
     return jsonify(children)
 
 @app.route('/api/children', methods=['POST'])
@@ -232,17 +252,38 @@ def add_child():
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(temp_password.encode('utf-8'), salt).decode('utf-8')
     
-    db.users.insert_one({
+    # Handle optional initial MAC addresses (array or newline/comma string)
+    raw_macs = data.get('mac_addresses', [])
+    if isinstance(raw_macs, str):
+        # Support comma or newline separated from forms
+        raw_macs = [line.strip() for line in raw_macs.replace(',', '\n').split('\n')]
+    
+    mac_addresses = []
+    for m in raw_macs:
+        if m and str(m).strip():
+            try:
+                normalized = normalize_mac(m)
+                if normalized and normalized not in mac_addresses:
+                    mac_addresses.append(normalized)
+            except ValueError:
+                # Skip invalid; could also return error. For UX, be lenient on initial add.
+                pass
+    
+    user_doc = {
         "username": username,
         "password_hash": hashed,
         "role": "child",
-        "is_temp_password": True
-    })
+        "is_temp_password": True,
+        "mac_addresses": mac_addresses
+    }
+    
+    db.users.insert_one(user_doc)
     
     return jsonify({
         "status": "success",
         "username": username,
-        "password": temp_password
+        "password": temp_password,
+        "mac_addresses": mac_addresses
     }), 201
 
 @app.route('/api/children/<username>', methods=['DELETE'])
@@ -280,6 +321,342 @@ def change_child_password(username):
     )
     
     return jsonify({"status": "success", "message": f"Password for child {username} updated successfully"})
+
+
+# --- Parent: Child MAC Address Management (for GL.iNet router integration) ---
+@app.route('/api/children/<username>/mac-addresses', methods=['GET'])
+@role_required('parent')
+def get_child_mac_addresses(username):
+    child = db.users.find_one({"username": username, "role": "child"}, {"username": 1, "mac_addresses": 1, "_id": 0})
+    if not child:
+        return jsonify({"error": "Child not found"}), 404
+    return jsonify({
+        "username": child["username"],
+        "mac_addresses": child.get("mac_addresses", [])
+    })
+
+
+@app.route('/api/children/<username>/mac-addresses', methods=['PUT'])
+@role_required('parent')
+def update_child_mac_addresses(username):
+    child = db.users.find_one({"username": username, "role": "child"})
+    if not child:
+        return jsonify({"error": "Child not found"}), 404
+    
+    data = request.get_json() or {}
+    raw_macs = data.get('mac_addresses', [])
+    
+    if not isinstance(raw_macs, list):
+        return jsonify({"error": "mac_addresses must be a list"}), 400
+    
+    mac_addresses = []
+    errors = []
+    for m in raw_macs:
+        if m and str(m).strip():
+            try:
+                normalized = normalize_mac(m)
+                if normalized and normalized not in mac_addresses:
+                    mac_addresses.append(normalized)
+            except ValueError as e:
+                errors.append(str(e))
+    
+    if errors:
+        # Still allow partial success, but report issues
+        pass
+    
+    db.users.update_one(
+        {"username": username, "role": "child"},
+        {"$set": {"mac_addresses": mac_addresses}}
+    )
+    
+    return jsonify({
+        "status": "success",
+        "username": username,
+        "mac_addresses": mac_addresses,
+        "invalid": errors if errors else None
+    })
+
+
+# --- Parent Manual Router Controls + Refresh + Logs ---
+
+@app.route('/api/children/<username>/router/block', methods=['POST'])
+@role_required('parent')
+def block_child_internet(username):
+    """Manually add the child's MACs to the blacklist (restrict internet)."""
+    actor = session['user']['username']
+    success, msg = _add_child_to_blacklist(username, actor=actor)
+    if success:
+        return jsonify({"status": "success", "message": f"Internet blocked for {username}."})
+    else:
+        return jsonify({"status": "error", "message": msg or "Failed to block internet."}), 500
+
+
+@app.route('/api/children/<username>/router/allow', methods=['POST'])
+@role_required('parent')
+def allow_child_internet(username):
+    """Manually remove the child's MACs from the blacklist (allow internet)."""
+    actor = session['user']['username']
+    success, msg = _remove_child_from_blacklist(username, actor=actor)
+    if success:
+        return jsonify({"status": "success", "message": f"Internet allowed for {username}."})
+    else:
+        return jsonify({"status": "error", "message": msg or "Failed to allow internet."}), 500
+
+
+@app.route('/api/router/refresh', methods=['POST'])
+@role_required('parent')
+def refresh_router_status():
+    """
+    Parent-triggered "Refresh Router Status".
+
+    Computes the correct blacklist state for *today* based on actual chore completion:
+      - Any child who has NOT completed all their chores for today → their MAC addresses must be in the blacklist.
+      - Any child who HAS completed all their chores for today (or has no chores assigned) → their MAC addresses must NOT be in the blacklist.
+
+    Fetches the current blacklist from the router (initial),
+    determines the required adds/removes,
+    applies them via the GL.iNet client (updating flags and logging each action),
+    then returns the initial list, the changes that were applied, and the final list from the router.
+    """
+    actor = session['user']['username']
+    client = _get_router_client()
+    if not client:
+        return jsonify({"error": "Router client not available. Check GLINET_ROUTER_PASS / GLINET_HOST."}), 503
+
+    try:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+
+        # Initial blacklist from the router
+        lists = client.get_lists()
+        initial_black = sorted(set(lists.get('black', []) or []))
+
+        # Load children
+        children = list(db.users.find(
+            {"role": "child"},
+            {"username": 1, "mac_addresses": 1}
+        ))
+
+        changes_to_block = []
+        changes_to_unblock = []
+
+        for child in children:
+            username = child["username"]
+            macs = child.get("mac_addresses", []) or []
+            if not macs:
+                continue
+
+            chores = list(db.chores.find({"assigned_to": username}))
+            if not chores:
+                # No chores assigned today → should be allowed (not blacklisted)
+                for mac in macs:
+                    if mac in initial_black:
+                        changes_to_unblock.append({"mac": mac, "child": username})
+                continue
+
+            completed_count = db.completions.count_documents({
+                "completed_by": username,
+                "date": today
+            })
+            all_completed = completed_count >= len(chores)
+
+            for mac in macs:
+                currently_blocked = mac in initial_black
+                if not all_completed and not currently_blocked:
+                    # Must be blocked
+                    changes_to_block.append({"mac": mac, "child": username})
+                elif all_completed and currently_blocked:
+                    # Must be unblocked
+                    changes_to_unblock.append({"mac": mac, "child": username})
+
+        # Apply the required changes.
+        # The helper functions will update the child's router_blacklisted flag
+        # and create detailed log entries.
+        for item in changes_to_block:
+            _add_child_to_blacklist(item["child"], actor=f"{actor} (refresh)")
+
+        for item in changes_to_unblock:
+            _remove_child_from_blacklist(item["child"], actor=f"{actor} (refresh)")
+
+        # Resultant blacklist from the router after our changes
+        final_lists = client.get_lists()
+        resultant_black = sorted(set(final_lists.get('black', []) or []))
+
+        return jsonify({
+            "status": "success",
+            "today": today,
+            "initial_blacklist": initial_black,
+            "changes": {
+                "to_block": changes_to_block,
+                "to_unblock": changes_to_unblock
+            },
+            "resultant_blacklist": resultant_black,
+            "message": f"Refresh complete for {today}. {len(changes_to_block)} MAC(s) added to blacklist, {len(changes_to_unblock)} removed."
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Router refresh failed: {str(e)}"}), 500
+
+
+@app.route('/api/router/logs', methods=['GET'])
+@role_required('parent')
+def get_router_logs():
+    """Return recent router actions for visibility."""
+    try:
+        logs = list(
+            db.router_logs.find({}, {"_id": 0})
+            .sort("timestamp", pymongo.DESCENDING)
+            .limit(100)
+        )
+        # Convert datetimes to ISO for JSON
+        for log in logs:
+            if "timestamp" in log and hasattr(log["timestamp"], "isoformat"):
+                log["timestamp"] = log["timestamp"].isoformat()
+        return jsonify(logs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# --- GL.iNet Router Integration Helpers (blacklist control for children) ---
+
+def _get_router_client():
+    """Return a configured GlinetClient or None if router integration is not available."""
+    try:
+        import glinet_blacklist as glib
+        host = os.environ.get("GLINET_HOST", "192.168.8.1")
+        # Password is automatically picked up from GLINET_ROUTER_PASS (injected via Docker secret)
+        return glib.GlinetClient(host=host)
+    except Exception as e:
+        print(f"[router] Could not initialize GlinetClient: {e}", flush=True)
+        return None
+
+
+def _log_router_action(action, child_username, macs, actor, success, error=None, date=None):
+    """Insert a record of a router blacklist operation."""
+    try:
+        db.router_logs.insert_one({
+            "timestamp": datetime.utcnow(),
+            "action": action,  # "add_to_blacklist" or "remove_from_blacklist"
+            "child_username": child_username,
+            "mac_addresses": macs or [],
+            "actor": actor,  # parent username, "auto_completion", "daily_reset", etc.
+            "success": bool(success),
+            "error": error,
+            "date": date
+        })
+    except Exception as log_err:
+        print(f"[router] Failed to log action: {log_err}", flush=True)
+
+
+def _execute_router_action(child_username, action, actor, date=None):
+    """
+    Perform add_to_blacklist or remove_from_blacklist for a child's MACs.
+    Updates the child's router_blacklisted flag and logs the action.
+    Returns (success, message)
+    """
+    child = db.users.find_one({"username": child_username, "role": "child"})
+    if not child:
+        return False, "Child not found"
+
+    macs = child.get("mac_addresses", [])
+    if not macs:
+        new_blacklisted = (action == "add_to_blacklist")
+        db.users.update_one(
+            {"username": child_username, "role": "child"},
+            {"$set": {"router_blacklisted": new_blacklisted}}
+        )
+        _log_router_action(action, child_username, [], actor, True, "No MAC addresses configured", date)
+        return True, "No MAC addresses configured for child"
+
+    client = _get_router_client()
+    overall_success = True
+    error_details = None
+
+    if client:
+        for mac in macs:
+            try:
+                if action == "add_to_blacklist":
+                    client.add_to_blacklist(mac)
+                else:
+                    client.remove_from_blacklist(mac)
+            except Exception as e:
+                overall_success = False
+                error_details = str(e)
+                print(f"[router] {action} failed for {mac} ({child_username}): {e}", flush=True)
+    else:
+        overall_success = False
+        error_details = "Router client not available (check GLINET_ROUTER_PASS / GLINET_HOST)"
+
+    new_blacklisted = (action == "add_to_blacklist")
+    db.users.update_one(
+        {"username": child_username, "role": "child"},
+        {"$set": {"router_blacklisted": new_blacklisted}}
+    )
+
+    _log_router_action(action, child_username, macs, actor, overall_success, error_details, date)
+
+    return overall_success, error_details or "Success"
+
+
+def _add_child_to_blacklist(username, actor="system", date=None):
+    """Add all of a specific child's MAC addresses to the blacklist (restricts internet)."""
+    return _execute_router_action(username, "add_to_blacklist", actor, date)
+
+
+def _remove_child_from_blacklist(username, actor="system", date=None):
+    """Remove all of a specific child's MAC addresses from the blacklist (allows internet)."""
+    return _execute_router_action(username, "remove_from_blacklist", actor, date)
+
+
+def daily_blacklist_reset():
+    """Scheduled job: at 4am local time, add ALL children's MACs back to the blacklist."""
+    print("[router] Running daily 4am blacklist reset for all children...", flush=True)
+    try:
+        children = list(db.users.find({"role": "child"}, {"username": 1}))
+        for child in children:
+            _add_child_to_blacklist(child["username"], actor="daily_reset")
+        print("[router] Daily 4am blacklist reset complete.", flush=True)
+    except Exception as e:
+        print(f"[router] Daily blacklist reset error: {e}", flush=True)
+
+
+def check_and_manage_blacklist_on_completion(username: str, date_str: str):
+    """Called after a child completes a chore.
+
+    If this child has now completed *all* of their assigned chores for the given date,
+    remove their MAC addresses from the router blacklist (lift internet restriction).
+    """
+    try:
+        child = db.users.find_one({"username": username, "role": "child"})
+        if not child:
+            return
+        macs = child.get("mac_addresses", [])
+        if not macs:
+            return
+
+        # Get all chores currently assigned to this child
+        chores = list(db.chores.find({"assigned_to": username}))
+        if not chores:
+            # No chores assigned — consider "all done" and allow access
+            _remove_child_from_blacklist(username, actor="auto_completion", date=date_str)
+            return
+
+        # Check completion status for every chore on this specific date
+        all_done = True
+        for chore in chores:
+            comp = db.completions.find_one({
+                "chore_id": chore["_id"],
+                "date": date_str,
+                "completed_by": username
+            })
+            if not comp:
+                all_done = False
+                break
+
+        if all_done:
+            _remove_child_from_blacklist(username, actor="auto_completion", date=date_str)
+    except Exception as e:
+        print(f"[router] Error in completion blacklist check for {username} on {date_str}: {e}", flush=True)
+
 
 # --- Chore APIs ---
 @app.route('/api/chores', methods=['GET'])
@@ -458,6 +835,16 @@ def complete_chore():
             os.remove(filepath)
         return jsonify({"error": "Chore already completed for this date"}), 400
         
+    # Router / GL.iNet integration:
+    # If the child has now completed every one of their chores for this date,
+    # remove their devices from the blacklist so they can access the internet.
+    try:
+        check_and_manage_blacklist_on_completion(
+            session['user']['username'], date_str
+        )
+    except Exception as e:
+        print(f"[router] Post-completion blacklist check failed: {e}", flush=True)
+
     return jsonify({
         "status": "success",
         "message": "Chore marked as completed successfully",
@@ -500,6 +887,30 @@ def get_completions():
         })
         
     return jsonify(formatted)
+
+# --- Daily Router Blacklist Scheduler (4am local/container time) ---
+# This starts a background APScheduler job that re-adds every child's MAC addresses
+# to the GL.iNet blacklist every day at 4:00 AM according to the container's local time.
+# The container timezone can be controlled via the TZ environment variable in docker-compose.
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
+
+    _blacklist_scheduler = BackgroundScheduler()
+    _blacklist_scheduler.add_job(
+        daily_blacklist_reset,
+        trigger=CronTrigger(hour=4, minute=0),
+        id="daily_child_mac_blacklist_reset",
+        name="4am daily re-apply blacklist to all children's devices",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1
+    )
+    _blacklist_scheduler.start()
+    print("[router] 4am daily blacklist reset scheduler started (hour=4 local time).", flush=True)
+except Exception as e:
+    print(f"[router] Scheduler not started (APScheduler may be missing or another issue): {e}", flush=True)
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))

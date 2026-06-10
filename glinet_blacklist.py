@@ -2,6 +2,8 @@
 """
 GL.iNet SDK 4.0 - Add/Remove MAC from Blacklist (or Whitelist)
 
+Can be used both as a command-line tool and as a Python library.
+
 Uses the black_white_list module:
   - black_white_list/get_config
   - black_white_list/set_single_mac   (mode=black/white, operate=add/del, mac=XX:XX:XX:XX:XX:XX)
@@ -14,12 +16,21 @@ Recommended:
 passlib is strongly preferred (and matches the Python examples in the official docs)
 because macOS's default `openssl passwd` (LibreSSL) can produce hashes that the
 router rejects for alg=5 / alg=6 even when the password is correct.
+
+Library usage (primary high-level API):
+
+    from glinet_blacklist import GlinetClient   # see GL-API.md for import details
+
+    with GlinetClient(host="192.168.8.1", password="...") as client:
+        client.add_to_blacklist("aa:bb:cc:dd:ee:ff")
+        print(client.get_lists())
 """
 
 import argparse
 import getpass
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -28,8 +39,7 @@ from typing import Any, Dict, List, Optional
 try:
     import requests
 except ImportError:
-    print("ERROR: 'requests' package is required. Install with: pip install requests passlib", file=sys.stderr)
-    sys.exit(1)
+    requests = None  # type: ignore[assignment]
 
 
 def normalize_mac(mac: str) -> str:
@@ -95,7 +105,12 @@ def get_cipher_password(password: str, alg: int, salt: str, debug: bool = False)
         raise RuntimeError(f"openssl passwd failed: {e.output.strip() if e.output else e}")
 
 
-def make_session(verify: bool = True) -> requests.Session:
+def make_session(verify: bool = True) -> "requests.Session":
+    if requests is None:
+        raise ImportError(
+            "The 'requests' package is required to use this module. "
+            "Install with: pip install requests passlib"
+        )
     s = requests.Session()
     if not verify:
         # For self-signed certs on https
@@ -261,6 +276,175 @@ def get_current_lists(url: str, sid: str, verify: bool = True, debug: bool = Fal
             else:
                 white = [normalize_mac(m) for m in cfg["mac"] if m]
     return {"black": black, "white": white, "raw": cfg}
+
+
+class GlinetClient:
+    """
+    High-level client for GL.iNet SDK 4.0 MAC blacklist/whitelist management.
+
+    This class provides a convenient, stateful API for use when importing
+    the module as a library from another Python application.
+
+    Password resolution order (for both constructor and login()):
+      1. Explicitly passed value
+      2. Value stored from the constructor
+      3. Environment variable GLINET_ROUTER_PASS
+
+    Example:
+        from glinet_blacklist import GlinetClient
+
+        # Password from constructor
+        with GlinetClient(host="192.168.8.1", password="secret") as client:
+            client.add_to_blacklist("AA:BB:CC:DD:EE:FF")
+            print(client.get_lists())
+
+        # Or rely on environment variable
+        # export GLINET_ROUTER_PASS="your-password"
+        client = GlinetClient(host="192.168.8.1")
+        client.add_to_blacklist("11:22:33:44:55:66")
+    """
+
+    def __init__(
+        self,
+        host: str = "192.168.8.1",
+        username: str = "root",
+        password: Optional[str] = None,
+        *,
+        https: bool = False,
+        verify: bool = True,
+        debug: bool = False,
+    ) -> None:
+        """
+        Create a client instance.
+
+        The actual login is performed lazily on the first operation that
+        requires a session id, or you can call login() explicitly.
+
+        Args:
+            host: Router LAN IP or hostname (default: 192.168.8.1)
+            username: Router username (default: "root")
+            password: Router password. If omitted here and not passed to login(),
+                      the client will fall back to the GLINET_ROUTER_PASS
+                      environment variable.
+            https: Use https:// instead of http:// (rare)
+            verify: Verify TLS certificates (set False for self-signed certs)
+            debug: Enable verbose debug output from the underlying auth flow
+        """
+        self.host = host
+        self.username = username
+        if password is None:
+            password = os.environ.get("GLINET_ROUTER_PASS")
+        self._password: Optional[str] = password
+        self.https = https
+        self.verify = verify
+        self.debug = debug
+        self._sid: Optional[str] = None
+
+    @property
+    def url(self) -> str:
+        scheme = "https" if self.https else "http"
+        return f"{scheme}://{self.host}/rpc"
+
+    def login(self, password: Optional[str] = None) -> str:
+        """
+        Perform the GL.iNet challenge + login flow and store the session id.
+
+        Password resolution order:
+          1. The `password` argument to this call
+          2. The password provided to the constructor (if any)
+          3. The GLINET_ROUTER_PASS environment variable
+
+        If no password is available after the above steps, a ValueError is raised.
+        (Interactive password prompting is only done in CLI mode.)
+        """
+        if password is not None:
+            self._password = password
+        if not self._password:
+            self._password = os.environ.get("GLINET_ROUTER_PASS")
+        if not self._password:
+            raise ValueError(
+                "Password is required. Provide it in the GlinetClient constructor, "
+                "call client.login(password=...), or set the GLINET_ROUTER_PASS "
+                "environment variable."
+            )
+        self._sid = login(
+            self.url,
+            self.username,
+            self._password,
+            verify=self.verify,
+            debug=self.debug,
+        )
+        return self._sid
+
+    @property
+    def sid(self) -> str:
+        """Return the current session id, logging in if necessary."""
+        if not self._sid:
+            self.login()
+        return self._sid  # type: ignore[return-value]
+
+    def get_lists(self) -> Dict[str, List[str]]:
+        """Return the current black and white lists."""
+        return get_current_lists(
+            self.url, self.sid, verify=self.verify, debug=self.debug
+        )
+
+    def add_mac(self, mac: str, mode: str = "black") -> Dict[str, Any]:
+        """
+        Add a MAC address to the specified list.
+
+        Args:
+            mac: MAC address (any common format)
+            mode: "black" or "white"
+        """
+        mac = normalize_mac(mac)
+        return set_single_mac(
+            self.url, self.sid, mode, "add", mac, verify=self.verify, debug=self.debug
+        )
+
+    def remove_mac(self, mac: str, mode: str = "black") -> Dict[str, Any]:
+        """
+        Remove a MAC address from the specified list.
+
+        Args:
+            mac: MAC address (any common format)
+            mode: "black" or "white"
+        """
+        mac = normalize_mac(mac)
+        return set_single_mac(
+            self.url, self.sid, mode, "del", mac, verify=self.verify, debug=self.debug
+        )
+
+    # Convenience methods -------------------------------------------------
+
+    def add_to_blacklist(self, mac: str) -> Dict[str, Any]:
+        """Add MAC to the blacklist."""
+        return self.add_mac(mac, mode="black")
+
+    def remove_from_blacklist(self, mac: str) -> Dict[str, Any]:
+        """Remove MAC from the blacklist."""
+        return self.remove_mac(mac, mode="black")
+
+    def add_to_whitelist(self, mac: str) -> Dict[str, Any]:
+        """Add MAC to the whitelist."""
+        return self.add_mac(mac, mode="white")
+
+    def remove_from_whitelist(self, mac: str) -> Dict[str, Any]:
+        """Remove MAC from the whitelist."""
+        return self.remove_mac(mac, mode="white")
+
+    # Context manager support --------------------------------------------
+
+    def __enter__(self) -> "GlinetClient":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        self.close()
+        return False
+
+    def close(self) -> None:
+        """Clear local session state (does not invalidate the server-side sid)."""
+        self._sid = None
 
 
 def main():

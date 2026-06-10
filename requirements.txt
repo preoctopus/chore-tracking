@@ -12,3 +12,6 @@ Pillow>=10.3.0
 #   across platforms (especially macOS, where LibreSSL's openssl passwd can fail).
 requests>=2.31.0
 passlib>=1.7.4
+
+# Background scheduler for daily 4am router blacklist reset job
+APScheduler>=3.10.0

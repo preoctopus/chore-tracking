@@ -30,6 +30,20 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    secrets:
+      # GL.iNet router password is provided via Docker secret (from router_password.txt)
+      # and promoted to the GLINET_ROUTER_PASS environment variable by docker-entrypoint.sh.
+      # This allows glinet-blacklist.py / GlinetClient to read it securely.
+      - router_password
+
+secrets:
+  # The router admin password is injected via Docker secret.
+  # Create router_password.txt (gitignored) containing your GL.iNet router password.
+  # The web service will fail to start if the file does not exist.
+  # Override the file path if needed:
+  #   GLINET_ROUTER_PASSWORD_FILE=./my-router-pass.txt docker-compose up
+  router_password:
+    file: ${GLINET_ROUTER_PASSWORD_FILE:-./router_password.txt}
 
 volumes:
   mongo-data:
