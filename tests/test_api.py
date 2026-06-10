@@ -199,5 +199,20 @@ class ChoreTrackerAPITestCase(unittest.TestCase):
         self.assertTrue(chores[0]['completed'])
         self.assertTrue(chores[1]['completed'])
 
+        # Test Parent changing Child's password
+        self.logout_user()
+        self.login_user("jane_parent", "parentpass")
+        resp = self.client.post('/api/children/kid_timmy/change-password', json={
+            "new_password": "timmyresetpass"
+        })
+        self.assertEqual(resp.status_code, 200)
+
+        # Confirm child can log in and is flagged to change password
+        self.logout_user()
+        resp = self.login_user("kid_timmy", "timmyresetpass")
+        self.assertEqual(resp.status_code, 200)
+        user_data = json.loads(resp.data)['user']
+        self.assertTrue(user_data['is_temp_password'])
+
 if __name__ == '__main__':
     unittest.main()

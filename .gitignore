@@ -1,6 +1,9 @@
 # macOS system files
 .DS_Store
 
+#Personal Notes
+TODO.md
+
 # Python virtual environments
 VENV/
 venv/

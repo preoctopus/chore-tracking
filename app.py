@@ -258,6 +258,29 @@ def delete_child(username):
     
     return jsonify({"status": "success", "message": f"Child {username} removed successfully"})
 
+@app.route('/api/children/<username>/change-password', methods=['POST'])
+@role_required('parent')
+def change_child_password(username):
+    child = db.users.find_one({"username": username, "role": "child"})
+    if not child:
+        return jsonify({"error": "Child not found"}), 404
+        
+    data = request.get_json() or {}
+    new_password = data.get('new_password', '')
+    
+    if not new_password or len(new_password) < 4:
+        return jsonify({"error": "Password must be at least 4 characters long"}), 400
+        
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(new_password.encode('utf-8'), salt).decode('utf-8')
+    
+    db.users.update_one(
+        {"username": username, "role": "child"},
+        {"$set": {"password_hash": hashed, "is_temp_password": True}}
+    )
+    
+    return jsonify({"status": "success", "message": f"Password for child {username} updated successfully"})
+
 # --- Chore APIs ---
 @app.route('/api/chores', methods=['GET'])
 @login_required

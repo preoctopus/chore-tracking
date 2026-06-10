@@ -365,6 +365,9 @@ class ChoreTrackerApp {
                     <td><strong>${escapeHTML(c.username)}</strong></td>
                     <td><span class="badge badge-child">Child</span></td>
                     <td class="text-right">
+                        <button type="button" class="btn btn-secondary btn-sm btn-icon" style="margin-right: 0.5rem;" title="Change Password" onclick="event.preventDefault(); event.stopPropagation(); app.openChangeChildPasswordModal('${escapeHTML(c.username)}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                        </button>
                         <button type="button" class="btn btn-danger btn-sm btn-icon" onclick="event.preventDefault(); event.stopPropagation(); app.deleteChild('${escapeHTML(c.username)}')">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                         </button>
@@ -608,30 +611,33 @@ class ChoreTrackerApp {
             
             dayDiv.innerHTML = `
                 <span class="day-number">${day}</span>
-                <div class="day-dots" id="dots-${dateStr}"></div>
+                <div class="calendar-day-chores"></div>
             `;
             
-            // Calculate dots metrics for children
-            const dotsContainer = dayDiv.querySelector('.day-dots');
+            const choresContainer = dayDiv.querySelector('.calendar-day-chores');
             
-            // Loop through each child to determine if chores were completed
-            this.children.forEach(child => {
-                // Find chores assigned to this child
-                const childChores = this.chores.filter(c => c.assigned_to === child.username);
-                if (childChores.length === 0) return; // No chores assigned, no progress status
+            // Loop through all chores to check status for this day
+            this.chores.forEach(chore => {
+                const isCompleted = completions.some(comp => 
+                    comp.chore_id === chore.id && 
+                    comp.completed_by === chore.assigned_to && 
+                    comp.date === dateStr
+                );
                 
-                // Find completions for this child on this date
-                const childCompletions = completions.filter(comp => comp.completed_by === child.username && comp.date === dateStr);
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'calendar-day-chore-item';
+                itemDiv.title = `${chore.assigned_to}: ${chore.title} (${isCompleted ? 'Completed' : 'Pending'})`;
                 
                 const dot = document.createElement('span');
-                dot.title = `${child.username}: ${childCompletions.length}/${childChores.length} completed`;
+                dot.className = `status-indicator-dot ${isCompleted ? 'complete' : 'incomplete'}`;
                 
-                if (childCompletions.length === childChores.length) {
-                    dot.className = 'completion-dot complete'; // All done (Green)
-                } else {
-                    dot.className = 'completion-dot incomplete'; // Missing or 0 (Red)
-                }
-                dotsContainer.appendChild(dot);
+                const textSpan = document.createElement('span');
+                textSpan.className = 'chore-detail-text';
+                textSpan.innerHTML = `<strong>${escapeHTML(chore.assigned_to)}</strong>: ${escapeHTML(chore.title)}`;
+                
+                itemDiv.appendChild(dot);
+                itemDiv.appendChild(textSpan);
+                choresContainer.appendChild(itemDiv);
             });
             
             // Add click detailed event
@@ -887,6 +893,84 @@ class ChoreTrackerApp {
         const img = document.getElementById('lightboxImage');
         img.src = imagePath;
         lightbox.showModal();
+    }
+
+    openChangeOwnPasswordModal() {
+        this.hideAlert('ownPasswordChangeAlert');
+        document.getElementById('changeOwnPasswordForm').reset();
+        document.getElementById('changeOwnPasswordModal').showModal();
+    }
+
+    async handleChangeOwnPassword(event) {
+        event.preventDefault();
+        this.hideAlert('ownPasswordChangeAlert');
+        
+        const newPassword = document.getElementById('ownNewPassword').value;
+        if (!newPassword || newPassword.length < 4) {
+            this.showAlert('ownPasswordChangeAlert', 'Password must be at least 4 characters long.', 'danger');
+            return;
+        }
+        
+        try {
+            const response = await fetch('/api/auth/change-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_password: newPassword })
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                this.showAlert('ownPasswordChangeAlert', 'Password updated successfully!', 'success');
+                setTimeout(() => {
+                    document.getElementById('changeOwnPasswordModal').close();
+                }, 1500);
+            } else {
+                this.showAlert('ownPasswordChangeAlert', data.error || 'Failed to update password.', 'danger');
+            }
+        } catch (error) {
+            this.showAlert('ownPasswordChangeAlert', 'Failed to communicate with server.', 'danger');
+        }
+    }
+
+    openChangeChildPasswordModal(username) {
+        this.hideAlert('childPasswordChangeAlert');
+        document.getElementById('changeChildPasswordForm').reset();
+        document.getElementById('changeChildPasswordUsername').value = username;
+        document.getElementById('changeChildPasswordTarget').textContent = username;
+        document.getElementById('changeChildPasswordModal').showModal();
+    }
+
+    async handleChangeChildPassword(event) {
+        event.preventDefault();
+        this.hideAlert('childPasswordChangeAlert');
+        
+        const username = document.getElementById('changeChildPasswordUsername').value;
+        const newPassword = document.getElementById('childNewPassword').value;
+        
+        if (!newPassword || newPassword.length < 4) {
+            this.showAlert('childPasswordChangeAlert', 'Password must be at least 4 characters long.', 'danger');
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/api/children/${encodeURIComponent(username)}/change-password`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_password: newPassword })
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                this.showAlert('childPasswordChangeAlert', 'Child password updated successfully!', 'success');
+                setTimeout(() => {
+                    document.getElementById('changeChildPasswordModal').close();
+                }, 1500);
+            } else {
+                this.showAlert('childPasswordChangeAlert', data.error || 'Failed to update child password.', 'danger');
+            }
+        } catch (error) {
+            this.showAlert('childPasswordChangeAlert', 'Failed to communicate with server.', 'danger');
+        }
     }
 }
 

@@ -641,14 +641,16 @@ input[type="file"]::file-selector-button:hover {
 }
 
 .calendar-day {
-    aspect-ratio: 1 / 1;
+    min-height: 100px;
+    height: auto;
     border: 1px solid rgba(255, 255, 255, 0.03);
     background: rgba(255, 255, 255, 0.01);
     border-radius: 8px;
-    padding: 6px;
+    padding: 8px;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: flex-start;
+    gap: 6px;
     cursor: pointer;
     transition: var(--transition-smooth);
 }
@@ -685,28 +687,54 @@ input[type="file"]::file-selector-button:hover {
     font-weight: 700;
 }
 
-/* Dots wrapper inside day */
-.day-dots {
+/* Day chores list inside calendar cell */
+.calendar-day-chores {
     display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    margin-top: 2px;
+    overflow: hidden;
 }
 
-.completion-dot {
+.calendar-day-chore-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    line-height: 1.25;
+    overflow: hidden;
+}
+
+.chore-detail-text {
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    width: 100%;
+}
+
+.chore-detail-text strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.status-indicator-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     display: inline-block;
+    flex-shrink: 0;
 }
 
-.completion-dot.complete {
+.status-indicator-dot.complete {
     background: var(--success-color);
     box-shadow: 0 0 6px var(--success-color);
 }
 
-.completion-dot.incomplete {
+.status-indicator-dot.incomplete {
     background: var(--danger-color);
+    box-shadow: 0 0 4px var(--danger-color);
 }
 
 /* Kid view styling */
