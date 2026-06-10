@@ -1,6 +1,14 @@
+# Web application (Flask + MongoDB)
 Flask>=3.0.3
 pymongo>=4.7.2
 bcrypt>=4.1.3
 python-dotenv>=1.0.1
 gunicorn>=22.0.0
 Pillow>=10.3.0
+
+# glinet-blacklist.py (GL.iNet SDK 4.0 router MAC blacklist/whitelist CLI)
+# Requires: requests (mandatory) + passlib (strongly recommended)
+#   passlib provides reliable crypt() hashing for the router login flow
+#   across platforms (especially macOS, where LibreSSL's openssl passwd can fail).
+requests>=2.31.0
+passlib>=1.7.4
