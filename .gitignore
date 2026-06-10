@@ -1,0 +1,39 @@
+# macOS system files
+.DS_Store
+
+# Python virtual environments
+VENV/
+venv/
+.venv/
+env/
+.env/
+
+# Python compiled files & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+htmlcov/
+tests/dummy.png
+
+# User uploaded files
+static/uploads/*
+!static/uploads/.gitkeep

@@ -1,0 +1,924 @@
+// ChoreTracker Pro - Core Client Application
+
+class ChoreTrackerApp {
+    constructor() {
+        this.user = null;
+        this.currentView = 'loginSection';
+        
+        // Calendar State
+        const today = new Date();
+        this.currentMonth = today.getMonth();
+        this.currentYear = today.getFullYear();
+        
+        // Kid Dashboard State
+        this.kidSelectedDate = this.getLocalDateString();
+        
+        // Cached data
+        this.children = [];
+        this.chores = [];
+        this.parents = [];
+    }
+
+    // --- Utility Methods ---
+    getLocalDateString(date = new Date()) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    formatReadableDate(dateStr) {
+        if (!dateStr) return '';
+        const parts = dateStr.split('-');
+        if (parts.length !== 3) return dateStr;
+        const d = new Date(parts[0], parts[1] - 1, parts[2]);
+        return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    }
+
+    showView(viewId) {
+        document.querySelectorAll('.view-panel').forEach(panel => {
+            panel.classList.add('hidden');
+        });
+        const view = document.getElementById(viewId);
+        if (view) {
+            view.classList.remove('hidden');
+            this.currentView = viewId;
+        }
+
+        // Header visibility logic
+        const header = document.getElementById('appHeader');
+        if (this.user) {
+            header.classList.remove('hidden');
+            document.getElementById('currentUsername').textContent = this.user.username;
+            
+            // Set role badge styles
+            const badge = document.getElementById('roleBadge');
+            badge.textContent = this.user.role;
+            badge.className = `badge badge-${this.user.role}`;
+        } else {
+            header.classList.add('hidden');
+        }
+    }
+
+    // Show API / UI alerts
+    showAlert(elementId, text, type = 'danger') {
+        const alertEl = document.getElementById(elementId);
+        if (alertEl) {
+            alertEl.textContent = text;
+            alertEl.className = `alert alert-${type}`;
+            alertEl.classList.remove('hidden');
+        }
+    }
+
+    hideAlert(elementId) {
+        const alertEl = document.getElementById(elementId);
+        if (alertEl) {
+            alertEl.classList.add('hidden');
+        }
+    }
+
+    // Copy to clipboard helper
+    copyToClipboard(text, element) {
+        navigator.clipboard.writeText(text).then(() => {
+            const originalText = element.textContent;
+            element.textContent = "Copied!";
+            element.style.borderColor = "#10b981";
+            element.style.color = "#34d399";
+            
+            setTimeout(() => {
+                element.textContent = originalText;
+                element.style.borderColor = "";
+                element.style.color = "";
+            }, 1500);
+        });
+    }
+
+    // --- Authentication Flows ---
+    async checkSession() {
+        try {
+            const response = await fetch('/api/auth/session');
+            const data = await response.json();
+            if (data.logged_in) {
+                this.user = data.user;
+                this.routeUserDashboard();
+            } else {
+                this.user = null;
+                this.showView('loginSection');
+            }
+        } catch (error) {
+            console.error('Session check failed:', error);
+            this.showView('loginSection');
+        }
+    }
+
+    async handleLogin(event) {
+        event.preventDefault();
+        this.hideAlert('loginError');
+        
+        const usernameInput = document.getElementById('loginUsername');
+        const passwordInput = document.getElementById('loginPassword');
+        
+        try {
+            const response = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: usernameInput.value,
+                    password: passwordInput.value
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                this.user = data.user;
+                usernameInput.value = '';
+                passwordInput.value = '';
+                
+                this.routeUserDashboard();
+            } else {
+                this.showAlert('loginError', data.error || 'Login failed. Please check credentials.');
+            }
+        } catch (error) {
+            this.showAlert('loginError', 'Failed to connect to server.');
+        }
+    }
+
+    async logout() {
+        try {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            this.user = null;
+            this.showView('loginSection');
+        } catch (error) {
+            console.error('Logout failed:', error);
+        }
+    }
+
+    routeUserDashboard() {
+        if (this.user.is_temp_password) {
+            // Force password change
+            const modal = document.getElementById('changePasswordModal');
+            this.hideAlert('passwordChangeError');
+            document.getElementById('newPassword').value = '';
+            
+            // Prevent close on escape or clicking outside
+            modal.addEventListener('cancel', (e) => e.preventDefault());
+            modal.showModal();
+            return;
+        }
+
+        if (this.user.role === 'admin') {
+            this.showView('adminSection');
+            this.loadAdminDashboard();
+        } else if (this.user.role === 'parent') {
+            this.showView('parentSection');
+            this.switchParentTab('calendar');
+            this.loadParentDashboard();
+        } else if (this.user.role === 'child') {
+            this.showView('kidSection');
+            this.loadKidDashboard();
+        }
+    }
+
+    async handleFirstPasswordChange(event) {
+        event.preventDefault();
+        this.hideAlert('passwordChangeError');
+        
+        const newPassword = document.getElementById('newPassword').value;
+        
+        try {
+            const response = await fetch('/api/auth/change-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_password: newPassword })
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                this.user.is_temp_password = false;
+                document.getElementById('changePasswordModal').close();
+                this.routeUserDashboard();
+            } else {
+                this.showAlert('passwordChangeError', data.error || 'Password update failed.');
+            }
+        } catch (error) {
+            this.showAlert('passwordChangeError', 'Connection error.');
+        }
+    }
+
+    // --- Admin Dashboard (Parent Management) ---
+    async loadAdminDashboard(keepMessage = false) {
+        if (!keepMessage) {
+            this.hideAlert('parentActionMessage');
+        }
+        const parentsTable = document.getElementById('parentsTableBody');
+        const emptyState = document.getElementById('parentsEmptyState');
+        parentsTable.innerHTML = '';
+        
+        try {
+            const response = await fetch('/api/parents');
+            const parents = await response.json();
+            this.parents = parents;
+            
+            if (parents.length === 0) {
+                emptyState.classList.remove('hidden');
+                return;
+            }
+            emptyState.classList.add('hidden');
+            
+            parents.forEach(p => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong>${escapeHTML(p.username)}</strong></td>
+                    <td><span class="badge badge-parent">Parent</span></td>
+                    <td class="text-right">
+                        <button type="button" class="btn btn-danger btn-sm btn-icon" onclick="event.preventDefault(); event.stopPropagation(); app.deleteParent('${escapeHTML(p.username)}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                        </button>
+                    </td>
+                `;
+                parentsTable.appendChild(tr);
+            });
+        } catch (error) {
+            console.error('Failed to load parents:', error);
+        }
+    }
+
+    async handleAddParent(event) {
+        event.preventDefault();
+        this.hideAlert('parentActionMessage');
+        const usernameInput = document.getElementById('parentUsername');
+        const username = usernameInput.value.trim();
+        
+        if (!username) return;
+        
+        try {
+            const response = await fetch('/api/parents', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username })
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                usernameInput.value = '';
+                
+                // Show generated password badge
+                const parentMsg = document.getElementById('parentActionMessage');
+                parentMsg.className = 'alert alert-success';
+                parentMsg.innerHTML = `
+                    Parent <strong>${escapeHTML(data.username)}</strong> created successfully! 
+                    <br>Copy this temporary password for first login:
+                    <div class="password-box" onclick="app.copyToClipboard('${data.password}', this)">${escapeHTML(data.password)}</div>
+                `;
+                parentMsg.classList.remove('hidden');
+                
+                this.loadAdminDashboard(true);
+            } else {
+                this.showAlert('parentActionMessage', data.error || 'Failed to add parent.');
+            }
+        } catch (error) {
+            this.showAlert('parentActionMessage', 'Failed to communicate with server.');
+        }
+    }
+
+    async deleteParent(username) {
+        if (!confirm(`Are you sure you want to remove parent '${username}'?`)) return;
+        
+        try {
+            const response = await fetch(`/api/parents/${encodeURIComponent(username)}`, {
+                method: 'DELETE'
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                this.loadAdminDashboard();
+            } else {
+                alert(data.error || 'Failed to remove parent.');
+            }
+        } catch (error) {
+            alert('Failed to connect to server.');
+        }
+    }
+
+    // --- Parent Dashboard Tabs & Loads ---
+    switchParentTab(tabName) {
+        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+        
+        if (tabName === 'calendar') {
+            document.getElementById('tabBtnCalendar').classList.add('active');
+            document.getElementById('parentTabCalendar').classList.remove('hidden');
+            this.renderCalendar();
+        } else if (tabName === 'chores') {
+            document.getElementById('tabBtnChores').classList.add('active');
+            document.getElementById('parentTabChores').classList.remove('hidden');
+            this.loadChoresList();
+        } else if (tabName === 'children') {
+            document.getElementById('tabBtnChildren').classList.add('active');
+            document.getElementById('parentTabChildren').classList.remove('hidden');
+            this.loadChildrenList();
+        }
+    }
+
+    async loadParentDashboard() {
+        // Fetch children, chores, and completions for local state caches
+        try {
+            await this.fetchLocalChildren();
+            await this.fetchLocalChores();
+        } catch (error) {
+            console.error('Error loading parent resources:', error);
+        }
+    }
+
+    async fetchLocalChildren() {
+        const response = await fetch('/api/children');
+        this.children = await response.json();
+    }
+
+    async fetchLocalChores() {
+        const response = await fetch('/api/chores');
+        this.chores = await response.json();
+    }
+
+    // --- Parent: Kids management ---
+    async loadChildrenList(keepMessage = false) {
+        if (!keepMessage) {
+            this.hideAlert('childActionMessage');
+        }
+        const childTable = document.getElementById('childrenTableBody');
+        const emptyState = document.getElementById('childrenEmptyState');
+        childTable.innerHTML = '';
+        
+        try {
+            await this.fetchLocalChildren();
+            
+            if (this.children.length === 0) {
+                emptyState.classList.remove('hidden');
+                return;
+            }
+            emptyState.classList.add('hidden');
+            
+            this.children.forEach(c => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong>${escapeHTML(c.username)}</strong></td>
+                    <td><span class="badge badge-child">Child</span></td>
+                    <td class="text-right">
+                        <button type="button" class="btn btn-danger btn-sm btn-icon" onclick="event.preventDefault(); event.stopPropagation(); app.deleteChild('${escapeHTML(c.username)}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                        </button>
+                    </td>
+                `;
+                childTable.appendChild(tr);
+            });
+        } catch (error) {
+            console.error('Failed to load children list:', error);
+        }
+    }
+
+    async handleAddChild(event) {
+        event.preventDefault();
+        this.hideAlert('childActionMessage');
+        const usernameInput = document.getElementById('childUsername');
+        const username = usernameInput.value.trim();
+        
+        if (!username) return;
+        
+        try {
+            const response = await fetch('/api/children', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username })
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                usernameInput.value = '';
+                
+                const childMsg = document.getElementById('childActionMessage');
+                childMsg.className = 'alert alert-success';
+                childMsg.innerHTML = `
+                    Child <strong>${escapeHTML(data.username)}</strong> added successfully!
+                    <br>Copy this temporary password for their first login:
+                    <div class="password-box" onclick="app.copyToClipboard('${data.password}', this)">${escapeHTML(data.password)}</div>
+                `;
+                childMsg.classList.remove('hidden');
+                
+                this.loadChildrenList(true);
+            } else {
+                this.showAlert('childActionMessage', data.error || 'Failed to add child.');
+            }
+        } catch (error) {
+            this.showAlert('childActionMessage', 'Failed to communicate with server.');
+        }
+    }
+
+    async deleteChild(username) {
+        if (!confirm(`Are you sure you want to remove child '${username}'? This deletes all their assigned chores and progress files.`)) return;
+        
+        try {
+            const response = await fetch(`/api/children/${encodeURIComponent(username)}`, {
+                method: 'DELETE'
+            });
+            const data = await response.json();
+            if (response.ok) {
+                this.loadChildrenList();
+            } else {
+                alert(data.error || 'Failed to delete child.');
+            }
+        } catch (error) {
+            alert('Failed to connect to server.');
+        }
+    }
+
+    // --- Parent: Chore manager ---
+    async loadChoresList() {
+        const choresTable = document.getElementById('choresTableBody');
+        const emptyState = document.getElementById('choresEmptyState');
+        choresTable.innerHTML = '';
+        
+        try {
+            await this.fetchLocalChores();
+            
+            if (this.chores.length === 0) {
+                emptyState.classList.remove('hidden');
+                return;
+            }
+            emptyState.classList.add('hidden');
+            
+            this.chores.forEach(c => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong>${escapeHTML(c.title)}</strong></td>
+                    <td class="text-secondary">${escapeHTML(c.description || 'No description')}</td>
+                    <td><span class="badge badge-child">${escapeHTML(c.assigned_to)}</span></td>
+                    <td class="text-right">
+                        <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="event.preventDefault(); event.stopPropagation(); app.openEditChoreModal('${c.id}', '${escapeJS(c.title)}', '${escapeJS(c.description || '')}', '${escapeJS(c.assigned_to)}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                        </button>
+                        <button type="button" class="btn btn-danger btn-sm btn-icon" onclick="event.preventDefault(); event.stopPropagation(); app.deleteChore('${c.id}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                        </button>
+                    </td>
+                `;
+                choresTable.appendChild(tr);
+            });
+        } catch (error) {
+            console.error('Failed to load chores:', error);
+        }
+    }
+
+    populateAssigneeSelect(selectedAssignee = '') {
+        const select = document.getElementById('choreAssignee');
+        select.innerHTML = '<option value="" disabled selected>Select child</option>';
+        this.children.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.username;
+            opt.textContent = c.username;
+            if (c.username === selectedAssignee) opt.selected = true;
+            select.appendChild(opt);
+        });
+    }
+
+    async openAddChoreModal() {
+        this.hideAlert('choreFormError');
+        document.getElementById('choreForm').reset();
+        document.getElementById('editChoreId').value = '';
+        document.getElementById('choreModalTitle').textContent = 'Add New Chore';
+        document.getElementById('choreSubmitBtn').textContent = 'Create Chore';
+        
+        await this.fetchLocalChildren();
+        this.populateAssigneeSelect();
+        
+        document.getElementById('choreModal').showModal();
+    }
+
+    async openEditChoreModal(id, title, desc, assignee) {
+        this.hideAlert('choreFormError');
+        document.getElementById('editChoreId').value = id;
+        document.getElementById('choreTitle').value = title;
+        document.getElementById('choreDescription').value = desc;
+        document.getElementById('choreModalTitle').textContent = 'Edit Chore';
+        document.getElementById('choreSubmitBtn').textContent = 'Save Changes';
+        
+        await this.fetchLocalChildren();
+        this.populateAssigneeSelect(assignee);
+        
+        document.getElementById('choreModal').showModal();
+    }
+
+    async handleChoreSubmit(event) {
+        event.preventDefault();
+        this.hideAlert('choreFormError');
+        
+        const id = document.getElementById('editChoreId').value;
+        const title = document.getElementById('choreTitle').value.trim();
+        const description = document.getElementById('choreDescription').value.trim();
+        const assigned_to = document.getElementById('choreAssignee').value;
+        
+        if (!title || !assigned_to) {
+            this.showAlert('choreFormError', 'Title and Assignee are required.');
+            return;
+        }
+        
+        const payload = { title, description, assigned_to };
+        const url = id ? `/api/chores/${id}` : '/api/chores';
+        const method = id ? 'PUT' : 'POST';
+        
+        try {
+            const response = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                document.getElementById('choreModal').close();
+                this.loadChoresList();
+            } else {
+                this.showAlert('choreFormError', data.error || 'Failed to save chore.');
+            }
+        } catch (error) {
+            this.showAlert('choreFormError', 'Connection failed.');
+        }
+    }
+
+    async deleteChore(id) {
+        if (!confirm('Are you sure you want to delete this chore and all its completion proofs?')) return;
+        
+        try {
+            const response = await fetch(`/api/chores/${id}`, { method: 'DELETE' });
+            if (response.ok) {
+                this.loadChoresList();
+            } else {
+                const data = await response.json();
+                alert(data.error || 'Failed to delete chore.');
+            }
+        } catch (error) {
+            alert('Failed to connect to server.');
+        }
+    }
+
+    // --- Parent: Calendar Progress Grid ---
+    async renderCalendar() {
+        const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        document.getElementById('currentMonthYear').textContent = `${monthNames[this.currentMonth]} ${this.currentYear}`;
+        
+        const grid = document.getElementById('calendarGrid');
+        grid.innerHTML = '';
+        
+        // Calculate days metrics
+        const firstDay = new Date(this.currentYear, this.currentMonth, 1).getDay();
+        const daysInMonth = new Date(this.currentYear, this.currentMonth + 1, 0).getDate();
+        
+        // Query start and end strings
+        const pad = (n) => String(n).padStart(2, '0');
+        const startDateStr = `${this.currentYear}-${pad(this.currentMonth + 1)}-01`;
+        const endDateStr = `${this.currentYear}-${pad(this.currentMonth + 1)}-${pad(daysInMonth)}`;
+        
+        // Fetch completions cache for this month and local list of chores/children
+        let completions = [];
+        try {
+            const response = await fetch(`/api/completions?start_date=${startDateStr}&end_date=${endDateStr}`);
+            completions = await response.json();
+            await this.fetchLocalChildren();
+            await this.fetchLocalChores();
+        } catch (error) {
+            console.error('Failed to load calendar records:', error);
+        }
+
+        // Fill leading empty calendar slots
+        for (let i = 0; i < firstDay; i++) {
+            const emptyDiv = document.createElement('div');
+            emptyDiv.className = 'calendar-day empty-day';
+            grid.appendChild(emptyDiv);
+        }
+        
+        const todayStr = this.getLocalDateString();
+        
+        // Populate days
+        for (let day = 1; day <= daysInMonth; day++) {
+            const dateStr = `${this.currentYear}-${pad(this.currentMonth + 1)}-${pad(day)}`;
+            const isToday = (dateStr === todayStr);
+            
+            const dayDiv = document.createElement('div');
+            dayDiv.className = `calendar-day ${isToday ? 'today' : ''}`;
+            
+            dayDiv.innerHTML = `
+                <span class="day-number">${day}</span>
+                <div class="day-dots" id="dots-${dateStr}"></div>
+            `;
+            
+            // Calculate dots metrics for children
+            const dotsContainer = dayDiv.querySelector('.day-dots');
+            
+            // Loop through each child to determine if chores were completed
+            this.children.forEach(child => {
+                // Find chores assigned to this child
+                const childChores = this.chores.filter(c => c.assigned_to === child.username);
+                if (childChores.length === 0) return; // No chores assigned, no progress status
+                
+                // Find completions for this child on this date
+                const childCompletions = completions.filter(comp => comp.completed_by === child.username && comp.date === dateStr);
+                
+                const dot = document.createElement('span');
+                dot.title = `${child.username}: ${childCompletions.length}/${childChores.length} completed`;
+                
+                if (childCompletions.length === childChores.length) {
+                    dot.className = 'completion-dot complete'; // All done (Green)
+                } else {
+                    dot.className = 'completion-dot incomplete'; // Missing or 0 (Red)
+                }
+                dotsContainer.appendChild(dot);
+            });
+            
+            // Add click detailed event
+            dayDiv.onclick = () => this.openDayDetails(dateStr, completions);
+            grid.appendChild(dayDiv);
+        }
+    }
+
+    changeMonth(direction) {
+        this.currentMonth += direction;
+        if (this.currentMonth < 0) {
+            this.currentMonth = 11;
+            this.currentYear -= 1;
+        } else if (this.currentMonth > 11) {
+            this.currentMonth = 0;
+            this.currentYear += 1;
+        }
+        this.renderCalendar();
+    }
+
+    openDayDetails(dateStr, completions) {
+        const dialog = document.getElementById('dayDetailsModal');
+        document.getElementById('dayDetailsDate').textContent = this.formatReadableDate(dateStr);
+        
+        const content = document.getElementById('dayDetailsContent');
+        content.innerHTML = '';
+        
+        if (this.children.length === 0) {
+            content.innerHTML = '<p class="empty-state">No children registered yet.</p>';
+            dialog.showModal();
+            return;
+        }
+        
+        this.children.forEach(child => {
+            const childDiv = document.createElement('div');
+            childDiv.className = 'day-child-status';
+            
+            const childChores = this.chores.filter(c => c.assigned_to === child.username);
+            
+            let choresListHtml = '';
+            if (childChores.length === 0) {
+                choresListHtml = '<p class="text-secondary text-sm">No chores assigned for this kid.</p>';
+            } else {
+                childChores.forEach(chore => {
+                    const comp = completions.find(c => c.chore_id === chore.id && c.completed_by === child.username && c.date === dateStr);
+                    
+                    if (comp) {
+                        choresListHtml += `
+                            <div class="day-child-chore-row">
+                                <span>🟢 <strong>${escapeHTML(chore.title)}</strong></span>
+                                <div class="completed-badge-area">
+                                    <span class="text-success">Done</span>
+                                    ${comp.image_path ? `<img src="${comp.image_path}" class="proof-thumbnail" onclick="event.stopPropagation(); app.viewImageProof('${comp.image_path}')" alt="proof">` : ''}
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        choresListHtml += `
+                            <div class="day-child-chore-row">
+                                <span>🔴 <span style="text-decoration: line-through; opacity: 0.6;">${escapeHTML(chore.title)}</span></span>
+                                <span class="badge" style="background: rgba(239, 68, 68, 0.1); color: #f87171; border-color: rgba(239,68,68,0.2);">Missed</span>
+                            </div>
+                        `;
+                    }
+                });
+            }
+            
+            childDiv.innerHTML = `
+                <h4>${escapeHTML(child.username)}</h4>
+                <div class="child-chores-status-list">
+                    ${choresListHtml}
+                </div>
+            `;
+            content.appendChild(childDiv);
+        });
+        
+        dialog.showModal();
+    }
+
+    // --- Kid Dashboard Actions ---
+    loadKidDashboard() {
+        document.getElementById('kidGreeting').textContent = `Hello, ${this.user.username}! 🌟`;
+        
+        const picker = document.getElementById('kidDatePicker');
+        picker.value = this.kidSelectedDate;
+        
+        // Prevent selecting future dates via date input picker limit
+        const todayStr = this.getLocalDateString();
+        picker.max = todayStr;
+        
+        this.loadKidChores();
+    }
+
+    handleKidDateChange() {
+        const picker = document.getElementById('kidDatePicker');
+        const selected = picker.value;
+        const todayStr = this.getLocalDateString();
+        
+        if (selected > todayStr) {
+            alert("Cannot select future dates!");
+            picker.value = todayStr;
+            this.kidSelectedDate = todayStr;
+        } else {
+            this.kidSelectedDate = selected;
+        }
+        
+        this.loadKidChores();
+    }
+
+    changeKidDate(direction) {
+        const currentParts = this.kidSelectedDate.split('-');
+        const date = new Date(currentParts[0], currentParts[1] - 1, currentParts[2]);
+        date.setDate(date.getDate() + direction);
+        
+        const dateStr = this.getLocalDateString(date);
+        const todayStr = this.getLocalDateString();
+        
+        if (dateStr > todayStr) {
+            // Future dates are blocked
+            return;
+        }
+        
+        this.kidSelectedDate = dateStr;
+        document.getElementById('kidDatePicker').value = dateStr;
+        this.loadKidChores();
+    }
+
+    async loadKidChores() {
+        const grid = document.getElementById('kidChoreGrid');
+        const emptyState = document.getElementById('kidChoreEmptyState');
+        const label = document.getElementById('selectedDateLabel');
+        
+        const todayStr = this.getLocalDateString();
+        const nextDateBtn = document.getElementById('kidNextDateBtn');
+        
+        if (this.kidSelectedDate === todayStr) {
+            label.textContent = "Today";
+            nextDateBtn.disabled = true;
+            nextDateBtn.style.opacity = '0.3';
+            nextDateBtn.style.cursor = 'not-allowed';
+        } else {
+            label.textContent = this.formatReadableDate(this.kidSelectedDate);
+            nextDateBtn.disabled = false;
+            nextDateBtn.style.opacity = '';
+            nextDateBtn.style.cursor = '';
+        }
+        
+        grid.innerHTML = '';
+        
+        try {
+            const response = await fetch(`/api/chores?date=${this.kidSelectedDate}`);
+            const chores = await response.json();
+            
+            if (chores.length === 0) {
+                emptyState.classList.remove('hidden');
+                return;
+            }
+            emptyState.classList.add('hidden');
+            
+            chores.forEach(c => {
+                const card = document.createElement('div');
+                card.className = `chore-card ${c.completed ? 'completed' : ''}`;
+                
+                let actionHtml = '';
+                if (c.completed) {
+                    actionHtml = `
+                        <div class="completed-badge-area">
+                            <span class="text-success">✓ Completed</span>
+                            ${c.image_path ? `<img src="${c.image_path}" class="proof-thumbnail" onclick="app.viewImageProof('${c.image_path}')" alt="proof preview">` : ''}
+                        </div>
+                    `;
+                } else if (this.kidSelectedDate < todayStr) {
+                    actionHtml = `
+                        <span class="badge" style="background: rgba(239, 68, 68, 0.1); color: #f87171; border-color: rgba(239,68,68,0.2);">Missed</span>
+                    `;
+                } else {
+                    actionHtml = `
+                        <button type="button" class="btn btn-primary btn-sm" onclick="event.preventDefault(); event.stopPropagation(); app.openCompleteChoreModal('${c.id}', '${escapeJS(c.title)}')">
+                            Mark Complete
+                        </button>
+                    `;
+                }
+                
+                card.innerHTML = `
+                    <div class="chore-card-content">
+                        <h3>${escapeHTML(c.title)}</h3>
+                        <p>${escapeHTML(c.description || 'No special instructions.')}</p>
+                    </div>
+                    <div class="chore-card-footer">
+                        <span class="badge" style="opacity: 0.6;">Daily</span>
+                        ${actionHtml}
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        } catch (error) {
+            console.error('Failed to load chores for child:', error);
+        }
+    }
+
+    openCompleteChoreModal(choreId, choreTitle) {
+        this.hideAlert('completeChoreError');
+        document.getElementById('completeChoreForm').reset();
+        document.getElementById('completeChoreId').value = choreId;
+        document.getElementById('completeChoreTitle').textContent = choreTitle;
+        
+        document.getElementById('completeChoreModal').showModal();
+    }
+
+    async handleCompleteChoreSubmit(event) {
+        event.preventDefault();
+        this.hideAlert('completeChoreError');
+        
+        const submitBtn = document.getElementById('completeSubmitBtn');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Saving...';
+        
+        const id = document.getElementById('completeChoreId').value;
+        const fileInput = document.getElementById('choreProofImage');
+        
+        const formData = new FormData();
+        formData.append('chore_id', id);
+        formData.append('date', this.kidSelectedDate);
+        formData.append('client_today', this.getLocalDateString()); // Client context check
+        
+        if (fileInput.files.length > 0) {
+            formData.append('image', fileInput.files[0]);
+        }
+        
+        try {
+            const response = await fetch('/api/completions', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                document.getElementById('completeChoreModal').close();
+                this.loadKidChores();
+            } else {
+                this.showAlert('completeChoreError', data.error || 'Failed to complete chore.');
+            }
+        } catch (error) {
+            this.showAlert('completeChoreError', 'Network or server error.');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Complete Chore';
+        }
+    }
+
+    viewImageProof(imagePath) {
+        const lightbox = document.getElementById('imageLightboxModal');
+        const img = document.getElementById('lightboxImage');
+        img.src = imagePath;
+        lightbox.showModal();
+    }
+}
+
+// --- Dynamic Helper Functions to prevent HTML and Script Injection ---
+function escapeHTML(str) {
+    if (!str) return '';
+    return str.replace(/[&<>'"]/g, 
+        tag => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            "'": '&#39;',
+            '"': '&quot;'
+        }[tag] || tag)
+    );
+}
+
+function escapeJS(str) {
+    if (!str) return '';
+    return str.replace(/['"\\\n\r]/g, 
+        char => ({
+            "'": "\\'",
+            '"': '\\"',
+            '\\': '\\\\',
+            '\n': '\\n',
+            '\r': '\\r'
+        }[char] || char)
+    );
+}
+
+// Global initialization
+const app = new ChoreTrackerApp();
+window.addEventListener('DOMContentLoaded', () => {
+    app.checkSession();
+});

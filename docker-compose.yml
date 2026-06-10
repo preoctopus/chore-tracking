@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  db:
+    image: mongo:6.0
+    container_name: chore_tracker_db
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    container_name: chore_tracker_web
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - MONGO_URI=mongodb://db:27017/chore_tracking
+      - FLASK_SECRET_KEY=dev-secret-key-chore-tracker-12345
+      - FLASK_ENV=development
+    volumes:
+      - chore-uploads:/app/static/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  chore-uploads:
