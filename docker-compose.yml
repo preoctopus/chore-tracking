@@ -33,7 +33,7 @@ services:
     secrets:
       # GL.iNet router password is provided via Docker secret (from router_password.txt)
       # and promoted to the GLINET_ROUTER_PASS environment variable by docker-entrypoint.sh.
-      # This allows glinet-blacklist.py / GlinetClient to read it securely.
+      # This allows glinet_blacklist.py / GlinetClient to read it securely.
       - router_password
 
 secrets:

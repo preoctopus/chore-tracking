@@ -8,7 +8,6 @@ from flask import Flask, request, jsonify, session, render_template
 import pymongo
 from bson.objectid import ObjectId
 import bcrypt
-from werkzeug.utils import secure_filename
 
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -21,8 +20,7 @@ app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB file upload limit
 # Ensure uploads folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-#print("ROUTER PASSWORD")
-#print(os.environ.get("GLINET_ROUTER_PASS", "Not Set"))
+
 
 # MongoDB connection
 mongo_uri = os.environ.get("MONGO_URI", "mongodb://localhost:27017/chore_tracking")

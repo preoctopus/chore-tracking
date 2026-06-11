@@ -46,10 +46,9 @@ chore-tracking/
 ├── tests/
 │   ├── dummy.png            # Asset for test uploads
 │   └── test_api.py          # API integration tests suite
-├── glinet-blacklist.py          # CLI utility: manage MAC blacklist/whitelist on GL.iNet routers (SDK 4.0)
-├── glinet_blacklist.py          # Copy/rename of the above for clean Python imports (recommended for webapp use)
+├── glinet_blacklist.py          # CLI utility & reusable Python library to manage MAC blacklist/whitelist on GL.iNet routers (SDK 4.0)
 ├── GL.iNet SDK4.0 API-DOCS.pdf  # Router RPC API reference
-├── GL-API.md                    # Documentation for using glinet-blacklist as a library
+├── GL-API.md                    # Documentation for using glinet_blacklist as a library
 ├── docker-entrypoint.sh         # Container entrypoint (promotes Docker secrets like router password into env vars)
 ├── router_password.txt.example  # Template for GL.iNet router admin password (copy to router_password.txt)
 └── run_dev.sh                   # Developer convenience script (local Flask + Docker MongoDB)
@@ -142,9 +141,9 @@ docker exec -t chore_tracker_web python -m unittest tests/test_api.py
 
 ## 🔧 Router Integration (GL.iNet)
 
-`glinet-blacklist.py` is a standalone CLI tool for adding/removing MAC addresses on a GL.iNet router's blacklist or whitelist using the `black_white_list` RPC module (SDK 4.0).
+`glinet_blacklist.py` is a CLI tool and reusable library for adding/removing MAC addresses on a GL.iNet router's blacklist or whitelist using the `black_white_list` RPC module (SDK 4.0).
 
-It is intended to be wired into the webapp in the future (e.g. parents restricting a child's internet access until chores are marked complete).
+It is integrated into the ChoreTracker Pro webapp, allowing parents to restrict a child's internet access until chores are marked complete.
 
 ### Requirements
 ```bash
@@ -157,29 +156,29 @@ pip install requests passlib
 
 **List current black/white lists:**
 ```bash
-python glinet-blacklist.py --list
+python glinet_blacklist.py --list
 ```
 
 **Add a MAC to the blacklist (interactive):**
 ```bash
-python glinet-blacklist.py
+python glinet_blacklist.py
 # then follow prompts for action + MAC
 ```
 
 **Add/remove non-interactively:**
 ```bash
-python glinet-blacklist.py --mac aa:bb:cc:dd:ee:ff --add
-python glinet-blacklist.py --mac aa:bb:cc:dd:ee:ff --remove
+python glinet_blacklist.py --mac aa:bb:cc:dd:ee:ff --add
+python glinet_blacklist.py --mac aa:bb:cc:dd:ee:ff --remove
 ```
 
 **Target a specific router / use whitelist mode:**
 ```bash
-python glinet-blacklist.py --host 192.168.8.1 --mode white --add --mac 11:22:33:44:55:66
+python glinet_blacklist.py --host 192.168.8.1 --mode white --add --mac 11:22:33:44:55:66
 ```
 
 **Debug authentication issues:**
 ```bash
-python glinet-blacklist.py --debug --list
+python glinet_blacklist.py --debug --list
 ```
 
 See the script header and `--help` for all options (custom username, https, insecure certs, etc.).

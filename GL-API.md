@@ -1,6 +1,6 @@
 # GL.iNet Blacklist/Whitelist API
 
-`glinet-blacklist.py` is both a command-line tool and a reusable Python library for managing MAC address blacklists and whitelists on GL.iNet routers running SDK 4.0 firmware via the `black_white_list` RPC module.
+`glinet_blacklist.py` is both a command-line tool and a reusable Python library for managing MAC address blacklists and whitelists on GL.iNet routers running SDK 4.0 firmware via the `black_white_list` RPC module.
 
 It implements the full challenge-response + crypt + hash login flow described in the official GL.iNet SDK 4.0 documentation.
 
@@ -15,44 +15,19 @@ pip install requests passlib
 
 ## Dual CLI + Library Design
 
-The same file can be executed directly (`python glinet-blacklist.py ...`) or imported as a library.
+The same file can be executed directly (`python glinet_blacklist.py ...`) or imported as a library.
 
 All low-level functions remain available for advanced use. A high-level `GlinetClient` class is provided for the most common "connect once, then add/remove/list" workflow.
 
 ## Importing as a Library
 
-Because the filename contains a hyphen (`glinet-blacklist.py`), normal `import glinet-blacklist` does not work. Use one of the following patterns:
-
-### Recommended: Rename for Application Use
-
-For integration into the webapp or other projects, rename or copy the file:
-
-```bash
-cp glinet-blacklist.py glinet_blacklist.py
-```
-
-Then:
+Because the filename is `glinet_blacklist.py` (using an underscore), it can be imported directly as a standard Python module:
 
 ```python
 from glinet_blacklist import GlinetClient
 
 client = GlinetClient(host="192.168.8.1", password="router-password")
 client.add_to_blacklist("AA:BB:CC:DD:EE:FF")
-```
-
-### Dynamic Import (no rename)
-
-```python
-import importlib.util
-from pathlib import Path
-
-spec = importlib.util.spec_from_file_location(
-    "glinet_blacklist", Path(__file__).parent / "glinet-blacklist.py"
-)
-gl = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(gl)
-
-client = gl.GlinetClient(...)
 ```
 
 ## GlinetClient (Recommended High-Level API)
@@ -269,7 +244,7 @@ The `GlinetClient` will pick it up automatically when no password is passed to t
 - `README.md` – high-level project overview, CLI examples, and Docker deployment notes
 - `docker-compose.yml` + `docker-entrypoint.sh` – how `GLINET_ROUTER_PASS` is injected via Docker secret in the web container
 - `router_password.txt.example` – template for the router admin password (copy to `router_password.txt`)
-- `glinet-blacklist.py --help`
+- `glinet_blacklist.py --help`
 
 ## License / Attribution
 

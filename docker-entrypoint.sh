@@ -4,7 +4,7 @@ set -e
 # docker-entrypoint.sh
 #
 # This entrypoint promotes certain Docker secrets into environment variables
-# so that application code (and glinet-blacklist.py) can access them via
+# so that application code (and glinet_blacklist.py) can access them via
 # os.environ without needing to know about the Docker secrets filesystem layout.
 #
 # Currently supported:
